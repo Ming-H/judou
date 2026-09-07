@@ -30,20 +30,45 @@ export interface CninfoAnnouncement {
   url: string;
 }
 
-async function postForm<T>(url: string, form: Record<string, string>): Promise<T> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'User-Agent': UA,
-      'X-Requested-With': 'XMLHttpRequest',
-      Referer: `${CNINFO_ORIGIN}/new/commonUrl?url=disclosure/list/notice`,
-    },
-    body: new URLSearchParams(form).toString(),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`cninfo HTTP ${res.status}`);
-  return (await res.json()) as T;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 判断是否值得重试：超时/连接类错误与 5xx；4xx（参数问题）不重试 */
+function isRetryable(e: unknown): boolean {
+  const err = e as Error;
+  const msg = `${err?.name ?? ''} ${err?.message ?? ''}`.toLowerCase();
+  return /timeout|aborted|fetch failed|econnreset|econnrefused|ehostunreach|enetunreach|socket hang up|http 5\d\d/.test(msg);
+}
+
+/**
+ * 带重试的表单 POST。巨潮对高频访问会间歇性慢响应/掐连接（表现为
+ * "The operation was aborted due to timeout"），自动重试可消化绝大多数瞬时故障。
+ */
+async function postForm<T>(url: string, form: Record<string, string>, retries = 2): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) await sleep(500 * attempt);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'User-Agent': UA,
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: `${CNINFO_ORIGIN}/new/commonUrl?url=disclosure/list/notice`,
+        },
+        body: new URLSearchParams(form).toString(),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (res.ok) return (await res.json()) as T;
+      const err = new Error(`cninfo HTTP ${res.status}`);
+      if (res.status < 500 || attempt === retries) throw err;
+      lastErr = err;
+    } catch (e) {
+      if (!isRetryable(e) || attempt === retries) throw e;
+      lastErr = e;
+    }
+  }
+  throw new Error(`巨潮暂时无响应（已重试 ${retries} 次）：${(lastErr as Error)?.message ?? 'unknown'}`);
 }
 
 /** 股票检索：关键词 → 候选 {code, orgId, name} */
@@ -111,13 +136,23 @@ export async function queryAnnouncements(opts: {
   return out;
 }
 
-/** 下载公告 PDF（仅接受巨潮静态域名，防 SSRF） */
+/** 下载公告 PDF（仅接受巨潮静态域名，防 SSRF；瞬时失败自动重试 1 次） */
 export async function downloadAnnouncementPdf(url: string): Promise<Buffer> {
   if (!url.startsWith(`${STATIC_ORIGIN}/`)) throw new Error('非法下载源');
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA, Referer: `${CNINFO_ORIGIN}/` },
-    signal: AbortSignal.timeout(60000),
-  });
-  if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    if (attempt > 0) await sleep(800);
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': UA, Referer: `${CNINFO_ORIGIN}/` },
+        signal: AbortSignal.timeout(60000),
+      });
+      if (res.ok) return Buffer.from(await res.arrayBuffer());
+      throw new Error(`下载失败 HTTP ${res.status}`);
+    } catch (e) {
+      lastErr = e;
+      if (!isRetryable(e) || attempt === 1) throw e;
+    }
+  }
+  throw (lastErr as Error) ?? new Error('下载失败');
 }
