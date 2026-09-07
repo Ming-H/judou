@@ -1,0 +1,387 @@
+'use client';
+
+/**
+ * PDF 阅读器：canvas 原版面渲染 + pdfjs 文本层（承担选中与语义叠加）。
+ * 数字句读：划选或点击长数字 → 悬浮换算卡（纯程序换算）。
+ */
+import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { readNumber, readSelection, type NumberReading } from '@/core/numberReadability';
+import type { DocumentEntry } from '@/core/store/types';
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type PdfjsLib = any;
+
+let pdfjsPromise: Promise<PdfjsLib> | null = null;
+function loadPdfjs(): Promise<PdfjsLib> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist').then((lib: PdfjsLib) => {
+      lib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+      return lib;
+    });
+  }
+  return pdfjsPromise;
+}
+
+interface OutlineItem {
+  title: string;
+  page: number;
+  depth: number;
+}
+
+/** 财报标准章节速查（PDF 无书签时的兜底目录；页码为常见结构的大致位置） */
+const STANDARD_SECTIONS: Array<[string, number]> = [
+  ['第一节 重要提示、目录', 0.02],
+  ['第二节 公司简介和主要财务指标', 0.04],
+  ['第三节 管理层讨论与分析', 0.08],
+  ['第四节 公司治理', 0.35],
+  ['第五节 环境和社会责任', 0.42],
+  ['第六节 重要事项', 0.45],
+  ['第七节 股份变动及股东情况', 0.55],
+  ['第八节 财务报告', 0.62],
+  ['第九节 备查文件目录', 0.98],
+];
+
+type HighlightMode = 'line' | 'color' | 'off';
+
+export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
+  const [numPages, setNumPages] = useState(0);
+  const [pageNum, setPageNum] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [outline, setOutline] = useState<OutlineItem[] | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mode, setMode] = useState<HighlightMode>('line');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [popover, setPopover] = useState<{ x: number; y: number; readings: NumberReading[] } | null>(null);
+
+  const pdfRef = useRef<PdfjsLib>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
+  const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
+  const hlSpansRef = useRef<HTMLSpanElement[]>([]);
+
+  const fileUrl = useMemo(() => `/api/documents/${doc.id}/file`, [doc.id]);
+
+  /* 加载 PDF + 书签 + 恢复阅读进度 */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const pdfjs = await loadPdfjs();
+        const pdf = await pdfjs.getDocument({ url: fileUrl }).promise;
+        if (cancelled) return;
+        pdfRef.current = pdf;
+        setNumPages(pdf.numPages);
+        const saved = Number(localStorage.getItem(`judou:progress:${doc.id}`));
+        if (saved >= 1 && saved <= pdf.numPages) setPageNum(saved);
+
+        const rawOutline = await pdf.getOutline().catch(() => null);
+        if (rawOutline?.length) {
+          const flat: OutlineItem[] = [];
+          const walk = async (items: any[], depth: number) => {
+            for (const item of items) {
+              if (!item) continue;
+              let page = 0;
+              try {
+                const dest = typeof item.dest === 'string' ? await pdf.getDestination(item.dest) : item.dest;
+                if (Array.isArray(dest) && dest[0]) page = (await pdf.getPageIndex(dest[0])) + 1;
+              } catch {
+                /* 无效书签跳过 */
+              }
+              if (item.title) flat.push({ title: item.title, page, depth });
+              if (item.items?.length) await walk(item.items, depth + 1);
+            }
+          };
+          await walk(rawOutline, 0);
+          if (!cancelled) setOutline(flat.filter((i) => i.page > 0));
+        }
+        if (!cancelled) setLoading(false);
+      } catch (e) {
+        if (!cancelled) {
+          setError(`文档加载失败：${(e as Error).message}`);
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fileUrl, doc.id]);
+
+  /* 渲染当前页：canvas + 文本层对齐 + 数字高亮 */
+  const renderPage = useCallback(async () => {
+    const pdf = pdfRef.current;
+    const canvas = canvasRef.current;
+    const textLayerDiv = textLayerRef.current;
+    const container = containerRef.current;
+    if (!pdf || !canvas || !textLayerDiv || !container) return;
+
+    const page = await pdf.getPage(pageNum);
+    const base = page.getViewport({ scale: 1 });
+    const fitScale = Math.max(0.1, (container.clientWidth - 16) / base.width);
+    const viewport = page.getViewport({ scale: fitScale * zoom });
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+    renderTaskRef.current?.cancel();
+    const task = page.render({
+      canvasContext: canvas.getContext('2d'),
+      viewport,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+    });
+    renderTaskRef.current = task;
+    try {
+      await task.promise;
+    } catch {
+      return; // 被后续渲染取消
+    }
+
+    textLayerDiv.innerHTML = '';
+    textLayerDiv.style.width = `${Math.floor(viewport.width)}px`;
+    textLayerDiv.style.height = `${Math.floor(viewport.height)}px`;
+    const pdfjs = await loadPdfjs();
+    const textLayer = new pdfjs.TextLayer({
+      textContentSource: page.streamTextContent(),
+      container: textLayerDiv,
+      viewport,
+    });
+    await textLayer.render();
+
+    // 数字句读叠加：长数字（千分位组或 ≥6 位）加高亮类
+    const spans: HTMLSpanElement[] = [];
+    textLayerDiv.querySelectorAll('span').forEach((el) => {
+      const span = el as HTMLSpanElement;
+      const text = span.textContent ?? '';
+      if (/\d{1,3}(,\d{3})+|\d{6,}/.test(text)) {
+        span.classList.add('hl-num');
+        spans.push(span);
+      }
+    });
+    hlSpansRef.current = spans;
+    container.className = container.className.replace(/\s*mode-\w+/g, '');
+    container.className += ` mode-${mode}`;
+  }, [pageNum, zoom, mode]);
+
+  useEffect(() => {
+    void renderPage();
+    localStorage.setItem(`judou:progress:${doc.id}`, String(pageNum));
+  }, [renderPage, pageNum, doc.id]);
+
+  /* 窗口缩放重渲染 */
+  useEffect(() => {
+    const onResize = () => void renderPage();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [renderPage]);
+
+  /* 键盘翻页 */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') setPageNum((p) => Math.max(1, p - 1));
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') setPageNum((p) => Math.min(numPages, p + 1));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [numPages]);
+
+  /* 划词 → 数字换算卡 */
+  function handleSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      setPopover(null);
+      return;
+    }
+    const text = sel.toString();
+    const readings = readSelection(text);
+    if (readings.length === 0) {
+      setPopover(null);
+      return;
+    }
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    setPopover({ x: rect.left + rect.width / 2, y: rect.top, readings });
+  }
+
+  /* 点击高亮数字 → 换算卡 */
+  function handleClick(e: React.MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.classList?.contains('hl-num')) {
+      const reading = readNumber(target.textContent ?? '');
+      if (reading) {
+        const rect = target.getBoundingClientRect();
+        setPopover({ x: rect.left + rect.width / 2, y: rect.top, readings: [reading] });
+        return;
+      }
+    }
+    setPopover(null);
+  }
+
+  const toc = outline ?? [];
+  const usingStandard = outline !== null && outline.length === 0;
+
+  return (
+    <div className="flex h-[calc(100vh-3.5rem)] flex-col">
+      {/* 工具栏 */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-ink-100 bg-white px-3 py-2 text-sm">
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="rounded border border-ink-200 px-2 py-1 text-xs hover:border-accent-500"
+          title="目录"
+        >
+          ☰ 目录
+        </button>
+        <div className="min-w-0 flex-1 truncate px-2">
+          <span className="font-medium">{doc.title}</span>
+          {doc.company && <span className="ml-2 text-xs text-ink-700/60">{doc.company}</span>}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setPageNum((p) => Math.max(1, p - 1))}
+            disabled={pageNum <= 1}
+            className="rounded border border-ink-200 px-2 py-1 disabled:opacity-40"
+          >
+            ‹
+          </button>
+          <input
+            value={pageNum}
+            onChange={(e) => {
+              const n = Number(e.target.value.replace(/\D/g, ''));
+              if (n >= 1 && n <= numPages) setPageNum(n);
+            }}
+            className="w-12 rounded border border-ink-200 px-1 py-1 text-center text-xs"
+          />
+          <span className="text-xs text-ink-700/70">/ {numPages || '…'}</span>
+          <button
+            onClick={() => setPageNum((p) => Math.min(numPages, p + 1))}
+            disabled={pageNum >= numPages}
+            className="rounded border border-ink-200 px-2 py-1 disabled:opacity-40"
+          >
+            ›
+          </button>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))}
+            className="rounded border border-ink-200 px-2 py-1 text-xs"
+          >
+            −
+          </button>
+          <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
+          <button
+            onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 10) / 10))}
+            className="rounded border border-ink-200 px-2 py-1 text-xs"
+          >
+            +
+          </button>
+          <button
+            onClick={() => setZoom(1)}
+            className="rounded border border-ink-200 px-2 py-1 text-xs hover:border-accent-500"
+            title="适应宽度"
+          >
+            适宽
+          </button>
+        </div>
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value as HighlightMode)}
+          className="rounded border border-ink-200 px-1 py-1 text-xs"
+          title="数字高亮模式"
+        >
+          <option value="line">数字·线条</option>
+          <option value="color">数字·颜色</option>
+          <option value="off">数字·关闭</option>
+        </select>
+        <Link href="/library" className="rounded border border-ink-200 px-2 py-1 text-xs hover:border-accent-500">
+          返回
+        </Link>
+      </div>
+
+      <div className="flex min-h-0 flex-1">
+        {/* 目录侧栏 */}
+        {sidebarOpen && (
+          <aside className="w-60 shrink-0 overflow-y-auto border-r border-ink-100 bg-white p-3 text-sm">
+            <p className="mb-2 text-xs font-medium text-ink-700/70">
+              {usingStandard ? '目录（PDF 无书签，标准章节速查）' : '目录'}
+            </p>
+            <ul className="space-y-0.5">
+              {toc.map((item, i) => (
+                <li key={i} style={{ paddingLeft: item.depth * 12 }}>
+                  <button
+                    onClick={() => setPageNum(item.page)}
+                    className="block w-full truncate rounded px-1.5 py-1 text-left text-xs hover:bg-ink-50 hover:text-accent-600"
+                    title={item.title}
+                  >
+                    {item.title}
+                    <span className="ml-1 text-ink-700/50">{item.page}</span>
+                  </button>
+                </li>
+              ))}
+              {usingStandard &&
+                STANDARD_SECTIONS.map(([title, ratio]) => (
+                  <li key={title}>
+                    <button
+                      onClick={() => setPageNum(Math.max(1, Math.round(numPages * ratio)))}
+                      className="block w-full rounded px-1.5 py-1 text-left text-xs hover:bg-ink-50 hover:text-accent-600"
+                    >
+                      {title}
+                      <span className="ml-1 text-ink-700/50">≈{Math.max(1, Math.round(numPages * ratio))}</span>
+                    </button>
+                  </li>
+                ))}
+            </ul>
+          </aside>
+        )}
+
+        {/* 正文 */}
+        <div className="relative flex-1 overflow-auto bg-ink-100/60 p-2" onScroll={() => setPopover(null)}>
+          {loading && (
+            <div className="flex h-full items-center justify-center text-sm text-ink-700/70">
+              正在打开 {doc.title}…
+            </div>
+          )}
+          {error && (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-red-600">
+              {error}
+              <Link href="/library" className="text-accent-600 underline">
+                返回文档库
+              </Link>
+            </div>
+          )}
+          <div className="mx-auto w-fit" onMouseUp={handleSelection} onClick={handleClick}>
+            <div ref={containerRef} className="relative shadow-md">
+              <canvas ref={canvasRef} className="block bg-white" />
+              <div ref={textLayerRef} className="textLayer" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 数字句读悬浮卡 */}
+      {popover && (
+        <div
+          className="fixed z-50 -translate-x-1/2 -translate-y-full rounded-lg border border-accent-500/40 bg-white px-4 py-3 shadow-xl"
+          style={{ left: popover.x, top: popover.y - 8 }}
+          onMouseLeave={() => setPopover(null)}
+        >
+          <p className="mb-1 text-[10px] tracking-widest text-ink-700/60">数字句读</p>
+          {popover.readings.map((r, i) => (
+            <div key={i} className="font-mono text-sm">
+              <p className="text-xs text-ink-700/70">{r.raw}</p>
+              {r.yi && <p className="font-medium text-accent-600">{r.yi}</p>}
+              {r.wan && r.yi && <p className="text-ink-900">{r.wan}</p>}
+              {r.wan && !r.yi && <p className="font-medium text-accent-600">{r.wan}</p>}
+            </div>
+          ))}
+          <p className="mt-1 text-[10px] text-ink-700/50">程序换算 · 非AI生成</p>
+        </div>
+      )}
+    </div>
+  );
+}

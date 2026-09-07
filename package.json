@@ -1,0 +1,31 @@
+{
+  "name": "judou",
+  "version": "0.1.0",
+  "description": "句读 · 开源 AI 财报伴读器 + 标的编年史",
+  "private": true,
+  "license": "AGPL-3.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "^14.2.5",
+    "pdfjs-dist": "4.10.38",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.1"
+  }
+}

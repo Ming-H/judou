@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-ink-50 text-ink-900 antialiased;
+}
+
+/* ---- PDF 文本层（与 canvas 像素对齐；承担文本选中与语义叠加高亮） ---- */
+.textLayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-align: initial;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+}
+
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.textLayer ::selection {
+  background: rgba(47, 95, 143, 0.28);
+}
+
+/* 语义叠加：数字句读高亮。三模式——线条(默认)/颜色/关闭 */
+.hl-num {
+  border-bottom: 2px dashed rgba(47, 95, 143, 0.85);
+  border-radius: 1px;
+}
+
+.mode-color .hl-num {
+  border-bottom: none;
+  background: rgba(47, 95, 143, 0.16);
+}
+
+.mode-off .hl-num {
+  border-bottom: none;
+  background: transparent;
+}
+
+.hl-num:hover {
+  background: rgba(47, 95, 143, 0.2);
+  cursor: zoom-in;
+}
