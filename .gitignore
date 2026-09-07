@@ -1,8 +1,18 @@
+# deps / build
 node_modules/
 .next/
+out/
+dist/
+
+# runtime data (self-host documents stay local)
+data/
+
+# env
 .env*
 !.env.example
-dist/
+
+# misc
 .DS_Store
 *.log
-data/
+*.tsbuildinfo
+next-env.d.ts
