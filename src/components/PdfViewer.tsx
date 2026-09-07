@@ -69,10 +69,13 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
 
   const pdfRef = useRef<PdfjsLib>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
   const hlSpansRef = useRef<HTMLSpanElement[]>([]);
+  /** 最近一次渲染的适配基准（供"整页"按钮换算） */
+  const fitRef = useRef<{ fitScale: number; baseH: number; baseW: number }>({ fitScale: 1, baseH: 0, baseW: 0 });
 
   const fileUrl = useMemo(() => `/api/documents/${doc.id}/file`, [doc.id]);
 
@@ -128,11 +131,15 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
     const canvas = canvasRef.current;
     const textLayerDiv = textLayerRef.current;
     const container = containerRef.current;
-    if (!pdf || !canvas || !textLayerDiv || !container) return;
+    const scroll = scrollRef.current;
+    if (!pdf || !canvas || !textLayerDiv || !container || !scroll) return;
 
     const page = await pdf.getPage(pageNum);
     const base = page.getViewport({ scale: 1 });
-    const fitScale = Math.max(0.1, (container.clientWidth - 16) / base.width);
+    // 适配基准 = 可滚动视口宽度（而不是页面自身宽度），窗口/侧栏变化即自适应
+    const avail = Math.max(200, scroll.clientWidth - 24);
+    const fitScale = avail / base.width;
+    fitRef.current = { fitScale, baseH: base.height, baseW: base.width };
     const viewport = page.getViewport({ scale: fitScale * zoom });
 
     const dpr = window.devicePixelRatio || 1;
@@ -185,12 +192,23 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
     localStorage.setItem(`judou:progress:${doc.id}`, String(pageNum));
   }, [renderPage, pageNum, doc.id]);
 
-  /* 窗口缩放重渲染 */
+  /* 容器尺寸变化（窗口缩放、开合目录侧栏/AI 面板）→ 自适应重渲染 */
   useEffect(() => {
-    const onResize = () => void renderPage();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => void renderPage());
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [renderPage]);
+
+  /** 整页显示：按视口高度换算缩放倍率 */
+  function fitPage() {
+    const scroll = scrollRef.current;
+    const { fitScale, baseH } = fitRef.current;
+    if (!scroll || !baseH) return;
+    const target = (scroll.clientHeight - 24) / baseH;
+    setZoom(Math.max(0.3, Math.min(3, Math.round((target / fitScale) * 100) / 100)));
+  }
 
   /* 键盘翻页 */
   useEffect(() => {
@@ -330,22 +348,35 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
           <button
             onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))}
             className="rounded border border-ink-200 px-2 py-1 text-xs"
+            title="缩小"
           >
             −
           </button>
-          <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
+          <span className="w-12 text-center text-xs" title={zoom === 1 ? '适应宽度' : '缩放倍率'}>
+            {zoom === 1 ? '适宽' : `${Math.round(zoom * 100)}%`}
+          </span>
           <button
             onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 10) / 10))}
             className="rounded border border-ink-200 px-2 py-1 text-xs"
+            title="放大"
           >
             +
           </button>
           <button
             onClick={() => setZoom(1)}
-            className="rounded border border-ink-200 px-2 py-1 text-xs hover:border-accent-500"
-            title="适应宽度"
+            className={`rounded border px-2 py-1 text-xs ${
+              zoom === 1 ? 'border-accent-500 text-accent-600' : 'border-ink-200 hover:border-accent-500'
+            }`}
+            title="页面宽度铺满可用区域（随窗口自适应）"
           >
             适宽
+          </button>
+          <button
+            onClick={fitPage}
+            className="rounded border border-ink-200 px-2 py-1 text-xs hover:border-accent-500"
+            title="整页显示（按视口高度适配）"
+          >
+            整页
           </button>
         </div>
         <select
@@ -409,7 +440,11 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
         )}
 
         {/* 正文 */}
-        <div className="relative flex-1 overflow-auto bg-ink-100/60 p-2" onScroll={() => setPopover(null)}>
+        <div
+          ref={scrollRef}
+          className="relative flex-1 overflow-auto bg-ink-100/60 p-2"
+          onScroll={() => setPopover(null)}
+        >
           {loading && (
             <div className="flex h-full items-center justify-center text-sm text-ink-700/70">
               正在打开 {doc.title}…
