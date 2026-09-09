@@ -111,6 +111,9 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
           };
           await walk(rawOutline, 0);
           if (!cancelled) setOutline(flat.filter((i) => i.page > 0));
+        } else {
+          // 无书签：置空以触发"财报标准章节速查"兜底目录（否则侧栏空白）
+          if (!cancelled) setOutline([]);
         }
         if (!cancelled) setLoading(false);
       } catch (e) {
