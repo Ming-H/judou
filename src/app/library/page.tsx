@@ -114,7 +114,10 @@ export default function LibraryPage() {
                       {d.year && <span>{d.year}</span>}
                       <span>{fmtSize(d.size)}</span>
                       <span>{d.source === 'cninfo' ? '巨潮' : '上传'}</span>
-                      <span>{d.addedAt.slice(0, 10)}</span>
+                      {/* 巨潮文档显示公告发布日期（F2.4 溯源），其余显示导入日期 */}
+                      <span title={d.source === 'cninfo' ? '公告发布日期' : '导入日期'}>
+                        {d.source === 'cninfo' && d.sourceTime ? d.sourceTime : d.addedAt.slice(0, 10)}
+                      </span>
                     </p>
                   </div>
                   <Link

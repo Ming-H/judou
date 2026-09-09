@@ -100,6 +100,7 @@ export class JsonFileStore implements DocumentStore {
       fileName,
       source: input.source,
       sourceUrl: input.sourceUrl,
+      sourceTime: input.sourceTime,
       hash,
       size: input.buffer.length,
       addedAt: new Date().toISOString(),

@@ -74,6 +74,19 @@ describe('JSON 文件存储', () => {
     expect((await store.findBySourceUrl(url))?.id).toBe(entry.id);
   });
 
+  it('F2.4 公告日期随条目入库（sourceTime）', async () => {
+    const store = await newStore();
+    const entry = await store.create({
+      buffer: FAKE_PDF,
+      title: '松发股份：关于签订重大合同的公告',
+      source: 'cninfo',
+      sourceUrl: 'https://static.cninfo.com.cn/finalpage/2026/9/1.PDF',
+      sourceTime: '2026-09-01',
+    });
+    expect(entry.sourceTime).toBe('2026-09-01');
+    expect((await store.get(entry.id))?.sourceTime).toBe('2026-09-01');
+  });
+
   it('remove 删除条目与文件', async () => {
     const store = await newStore();
     const entry = await store.create({ buffer: FAKE_PDF, title: 'x.pdf', source: 'upload' });

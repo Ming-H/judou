@@ -8,6 +8,8 @@ export interface DocumentEntry extends DocMeta {
   source: 'upload' | 'cninfo';
   /** 巨潮公告原文链接（站内下载溯源） */
   sourceUrl?: string;
+  /** 公告发布日期 YYYY-MM-DD（巨潮公告时间；站内下载溯源 F2.4） */
+  sourceTime?: string;
   /** 内容寻址 sha256（跨重启去重键；衍生缓存亦以此共享，见技术设计 §2） */
   hash: string;
   size: number;
@@ -19,6 +21,7 @@ export interface CreateDocumentInput {
   title: string;
   source: 'upload' | 'cninfo';
   sourceUrl?: string;
+  sourceTime?: string;
 }
 
 export interface DocumentStore {

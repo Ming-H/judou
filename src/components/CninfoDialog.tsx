@@ -77,7 +77,7 @@ export default function CninfoDialog({ onClose, onImported }: { onClose: () => v
         const res = await fetch('/api/cninfo/download', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: targets[i].url, title: targets[i].title }),
+          body: JSON.stringify({ url: targets[i].url, title: targets[i].title, time: targets[i].time }),
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error);
