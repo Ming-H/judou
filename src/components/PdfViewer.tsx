@@ -227,6 +227,15 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [numPages]);
 
+  /* 高亮模式偏好：恢复须先于持久化声明（挂载时同批副作用按声明顺序执行，先读后写） */
+  useEffect(() => {
+    const saved = localStorage.getItem('judou:hlmode');
+    if (saved === 'line' || saved === 'color' || saved === 'off') setMode(saved);
+  }, []);
+  useEffect(() => {
+    localStorage.setItem('judou:hlmode', mode);
+  }, [mode]);
+
   /* 划词 → 数字换算卡 */
   function handleSelection() {
     const sel = window.getSelection();
