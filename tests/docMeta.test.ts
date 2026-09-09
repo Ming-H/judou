@@ -48,4 +48,23 @@ describe('文档元信息解析', () => {
     expect(m.company).toBe('');
     expect(m.docType).toBe('半年报');
   });
+
+  it('无分隔符标题兜底：公司全名+年份+报告类型', () => {
+    const m = parseDocMeta('山西杏花村汾酒厂股份有限公司2026年半年度报告');
+    expect(m.company).toBe('山西杏花村汾酒厂股份有限公司');
+    expect(m.year).toBe(2026);
+    expect(m.docType).toBe('半年报');
+  });
+
+  it('无分隔符标题兜底：简称+年份+报告类型', () => {
+    expect(parseDocMeta('松发股份2026年半年度报告').company).toBe('松发股份');
+  });
+
+  it('无分隔符且无公司名（纯报告名）company 仍为空', () => {
+    expect(parseDocMeta('2026年半年度报告').company).toBe('');
+  });
+
+  it('公告类标题不被兜底误伤（不含报告词则不剥）', () => {
+    expect(parseDocMeta('中际旭创股份有限公司关于签订重大合同的公告').company).toBe('');
+  });
 });

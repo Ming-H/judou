@@ -33,6 +33,17 @@ export function parseDocMeta(rawTitle: string): DocMeta {
   if (sep && !/\d{4}/.test(sep[1]) && !/报告|公告/.test(sep[1])) {
     company = sep[1].trim();
   }
+  // 兜底：无分隔符的标题（如"山西杏花村汾酒厂股份有限公司2026年半年度报告"），
+  // 剥离"年份+报告类型"后缀后若剩余部分像公司名（含公司/集团/银行/股份字样）则采用
+  if (!company) {
+    const m = title.match(
+      /^(.*?)(?:19[9]\d|20[0-2]\d)?\s*年?\s*(?:半年度报告|年度报告|第一季度报告|第三季度报告|季度报告|中期报告|招股说明书|招股章程)/,
+    );
+    const cand = m?.[1]?.trim() ?? '';
+    if (cand.length >= 4 && cand.length <= 25 && /公司|集团|银行|股份/.test(cand)) {
+      company = cand;
+    }
+  }
 
   const yearMatch = title.match(/(19[9]\d|20[0-2]\d)/);
   const year = yearMatch ? Number(yearMatch[0]) : undefined;

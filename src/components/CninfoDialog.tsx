@@ -77,7 +77,13 @@ export default function CninfoDialog({ onClose, onImported }: { onClose: () => v
         const res = await fetch('/api/cninfo/download', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: targets[i].url, title: targets[i].title, time: targets[i].time }),
+          // 公告标题可能不含公司名（如"2026年半年度报告"），把搜索选中的标的名透传入库
+          body: JSON.stringify({
+            url: targets[i].url,
+            title: targets[i].title,
+            time: targets[i].time,
+            company: picked.name,
+          }),
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error);

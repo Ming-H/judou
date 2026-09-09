@@ -106,6 +106,8 @@ export class JsonFileStore implements DocumentStore {
       addedAt: new Date().toISOString(),
       ...meta,
     };
+    // 公司名以调用方显式指定优先（巨潮搜索选择），标题解析只是兜底
+    if (input.company) entry.company = input.company;
     all.push(entry);
     this.hashToId.set(hash, id);
     await this.persist();

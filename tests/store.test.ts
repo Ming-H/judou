@@ -87,6 +87,19 @@ describe('JSON 文件存储', () => {
     expect((await store.get(entry.id))?.sourceTime).toBe('2026-09-01');
   });
 
+  it('公司名以调用方显式指定优先（公告标题不含公司名场景）', async () => {
+    const store = await newStore();
+    const entry = await store.create({
+      buffer: FAKE_PDF,
+      title: '2026年半年度报告', // 标题解析不出公司名
+      source: 'cninfo',
+      sourceUrl: 'https://static.cninfo.com.cn/finalpage/2026/8/2.PDF',
+      company: '山西汾酒',
+    });
+    expect(entry.company).toBe('山西汾酒');
+    expect((await store.get(entry.id))?.company).toBe('山西汾酒');
+  });
+
   it('remove 删除条目与文件', async () => {
     const store = await newStore();
     const entry = await store.create({ buffer: FAKE_PDF, title: 'x.pdf', source: 'upload' });

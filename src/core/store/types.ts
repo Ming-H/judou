@@ -22,6 +22,8 @@ export interface CreateDocumentInput {
   source: 'upload' | 'cninfo';
   sourceUrl?: string;
   sourceTime?: string;
+  /** 公司名覆盖（巨潮搜索时用户选中的标的名——公告标题可能不含公司名） */
+  company?: string;
 }
 
 export interface DocumentStore {
