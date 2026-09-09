@@ -21,11 +21,11 @@ export async function POST(req: NextRequest) {
     const filePath = store.filePath(entry.id);
     if (!filePath) return NextResponse.json({ error: '文件缺失' }, { status: 404 });
 
-    const cacheKey = `digest:${entry.id}:p${page}:${llmModel()}`;
+    const cacheKey = `digest:${entry.hash}:p${page}:${llmModel()}`;
     const hit = await cacheGet(store.dir, cacheKey);
     if (hit) return NextResponse.json({ digest: hit, cached: true });
 
-    const texts = await getPageTexts(store.dir, entry.id, filePath);
+    const texts = await getPageTexts(store.dir, entry.hash, filePath);
     const pageText = texts[page - 1] ?? '';
     const { system, user } = buildDigestPrompt(page, pageText);
     const digest = (await llmChat(

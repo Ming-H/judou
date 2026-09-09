@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     const filePath = store.filePath(entry.id);
     if (!filePath) return NextResponse.json({ error: '文件缺失' }, { status: 404 });
 
-    const texts = await getPageTexts(store.dir, entry.id, filePath);
+    const texts = await getPageTexts(store.dir, entry.hash, filePath);
     const contextPages = [];
     for (let p = Math.max(1, page - 2); p <= Math.min(texts.length, page + 2); p++) {
       contextPages.push({ page: p, text: texts[p - 1] ?? '' });

@@ -1,6 +1,7 @@
 /**
  * 服务端逐页文本抽取（程序层，零 LLM 成本）。
- * 用 pdfjs legacy build 在 Node 侧抽取每页文本，JSON 缓存于 {dataDir}/pagetext/{docId}.json。
+ * 用 pdfjs legacy build 在 Node 侧抽取每页文本，JSON 缓存于 {dataDir}/pagetext/{contentHash}.json。
+ * 以内容 hash 为键：同一份公告的衍生产物全站共享一份（技术设计 §5）。
  * 这是数字索引/速览/问答上下文的统一数据源。
  */
 import { promises as fs } from 'fs';
@@ -15,13 +16,13 @@ async function getPdfjs(): Promise<any> {
   return pdfjsServer;
 }
 
-function cachePath(dataDir: string, docId: string): string {
-  return path.join(dataDir, 'pagetext', `${docId}.json`);
+function cachePath(dataDir: string, contentHash: string): string {
+  return path.join(dataDir, 'pagetext', `${contentHash}.json`);
 }
 
 /** 获取整份文档的逐页文本（带缓存；首次抽取 200 页约数秒） */
-export async function getPageTexts(dataDir: string, docId: string, pdfPath: string): Promise<string[]> {
-  const file = cachePath(dataDir, docId);
+export async function getPageTexts(dataDir: string, contentHash: string, pdfPath: string): Promise<string[]> {
+  const file = cachePath(dataDir, contentHash);
   try {
     return JSON.parse(await fs.readFile(file, 'utf-8')) as string[];
   } catch {

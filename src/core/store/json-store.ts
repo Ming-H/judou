@@ -16,6 +16,7 @@ export class JsonFileStore implements DocumentStore {
   private pdfDir: string;
   private entries: DocumentEntry[] | null = null;
   private hashToId = new Map<string, string>();
+  private loadPromise: Promise<DocumentEntry[]> | null = null;
 
   constructor(dir: string) {
     this.dir = dir;
@@ -26,17 +27,37 @@ export class JsonFileStore implements DocumentStore {
 
   private async load(): Promise<DocumentEntry[]> {
     if (this.entries) return this.entries;
+    if (!this.loadPromise) {
+      this.loadPromise = this.loadFromDisk().finally(() => {
+        this.loadPromise = null;
+      });
+    }
+    return this.loadPromise;
+  }
+
+  private async loadFromDisk(): Promise<DocumentEntry[]> {
+    let entries: DocumentEntry[];
     try {
-      const raw = await fs.readFile(this.manifestPath, 'utf-8');
-      this.entries = JSON.parse(raw) as DocumentEntry[];
+      entries = JSON.parse(await fs.readFile(this.manifestPath, 'utf-8')) as DocumentEntry[];
     } catch {
-      this.entries = [];
+      entries = [];
     }
-    // hash 索引重建（老条目无 hash 字段时按 fileName 兜底）
-    for (const e of this.entries) {
-      if (e.id) this.hashToId.set(e.id, e.id);
+    // hash→id 索引重建；老条目（hash 未持久化时代）按文件内容回补一次并落盘
+    let dirty = false;
+    for (const e of entries) {
+      if (!e.hash) {
+        e.hash = await this.hashFile(path.join(this.pdfDir, e.fileName)).catch(() => '');
+        if (e.hash) dirty = true;
+      }
+      if (e.hash) this.hashToId.set(e.hash, e.id);
     }
-    return this.entries;
+    this.entries = entries;
+    if (dirty) await this.persist();
+    return entries;
+  }
+
+  private async hashFile(file: string): Promise<string> {
+    return createHash('sha256').update(await fs.readFile(file)).digest('hex');
   }
 
   private async persist(): Promise<void> {
@@ -62,7 +83,7 @@ export class JsonFileStore implements DocumentStore {
 
   async create(input: CreateDocumentInput): Promise<DocumentEntry> {
     const all = await this.load();
-    // 内容寻址去重：hash 命中直接复用既有条目
+    // 内容寻址去重：hash 命中直接复用既有条目（hash 已持久化，跨重启同样生效）
     const hash = createHash('sha256').update(input.buffer).digest('hex');
     const existingId = this.hashToId.get(hash);
     if (existingId) {
@@ -79,6 +100,7 @@ export class JsonFileStore implements DocumentStore {
       fileName,
       source: input.source,
       sourceUrl: input.sourceUrl,
+      hash,
       size: input.buffer.length,
       addedAt: new Date().toISOString(),
       ...meta,
