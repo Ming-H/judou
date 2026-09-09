@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from 'fs/promises';
-import { readFile, writeFile } from 'fs/promises';
+import { access, mkdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -81,6 +81,48 @@ describe('JSON 文件存储', () => {
     expect(await store.get(entry.id)).toBeNull();
     expect((await store.list()).length).toBe(0);
     expect(await store.remove(entry.id)).toBe(false);
+  });
+
+  it('AC2.4 remove 同时清理 pagetext 与 ai-cache 衍生数据（含旧版 docId 键名）', async () => {
+    const store = await newStore();
+    const entry = await store.create({ buffer: FAKE_PDF, title: 'x.pdf', source: 'upload' });
+    // 模拟衍生产物：新版按 hash 命名 + 旧版按 docId 命名
+    await mkdir(path.join(store.dir, 'pagetext'), { recursive: true });
+    await mkdir(path.join(store.dir, 'ai-cache'), { recursive: true });
+    const files = [
+      path.join(store.dir, 'pagetext', `${entry.hash}.json`),
+      path.join(store.dir, 'pagetext', `${entry.id}.json`),
+      path.join(store.dir, 'ai-cache', `digest:${entry.hash}:p1:glm-5_1.txt`),
+      path.join(store.dir, 'ai-cache', `digest:${entry.id}:p2:glm-5_1.txt`),
+    ];
+    for (const f of files) await writeFile(f, 'x', 'utf-8');
+
+    await store.remove(entry.id);
+    for (const f of files) {
+      await expect(access(f)).rejects.toThrow(); // 全部清理
+    }
+  });
+
+  it('AC2.4 衍生数据共享保护：仍有条目引用同一 hash 时不删缓存', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'judou-test-'));
+    dirs.push(dir);
+    const s1 = new JsonFileStore(dir);
+    const a = await s1.create({ buffer: FAKE_PDF, title: 'A.pdf', source: 'upload' });
+    const other = Buffer.from('%PDF-1.4 another distinct body');
+    const b = await s1.create({ buffer: other, title: 'B.pdf', source: 'upload' });
+    // 手工构造同 hash 共享场景：把 b 的 hash 索引指回 a 的内容（共享衍生产物）
+    const manifestPath = path.join(dir, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+    const entryB = manifest.find((e: { id: string }) => e.id === b.id);
+    entryB.hash = a.hash;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+    const s2 = new JsonFileStore(dir);
+    const cacheFile = path.join(dir, 'pagetext', `${a.hash}.json`);
+    await mkdir(path.join(dir, 'pagetext'), { recursive: true });
+    await writeFile(cacheFile, 'x', 'utf-8');
+
+    await s2.remove(a.id); // 删除 a，但 b 仍引用同一 hash
+    await expect(access(cacheFile)).resolves.toBeUndefined(); // 共享缓存保留
   });
 
   it('重启（新实例同一目录）后数据仍在', async () => {

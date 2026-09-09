@@ -122,12 +122,39 @@ export class JsonFileStore implements DocumentStore {
     const idx = all.findIndex((e) => e.id === id);
     if (idx === -1) return false;
     const [removed] = all.splice(idx, 1);
+    if (this.hashToId.get(removed.hash) === removed.id) this.hashToId.delete(removed.hash);
     try {
       await fs.unlink(path.join(this.pdfDir, removed.fileName));
     } catch {
       // 文件已不存在则忽略
     }
+    await this.removeDerivatives(all, removed);
     await this.persist();
     return true;
+  }
+
+  /**
+   * AC2.4：删除文档同时清理衍生数据（逐页文本与 AI 速览缓存）。
+   * 衍生产物按内容 hash 寻址——仍有其他条目引用同一 hash 时不删（共享缓存）。
+   * 兼容清理旧版 docId 键名（hash 迁移前）的文件。
+   */
+  private async removeDerivatives(remaining: DocumentEntry[], removed: DocumentEntry): Promise<void> {
+    if (removed.hash && remaining.some((e) => e.hash === removed.hash)) return;
+    const cacheDir = path.join(this.dir, 'ai-cache');
+    let cachedFiles: string[] = [];
+    try {
+      cachedFiles = await fs.readdir(cacheDir);
+    } catch {
+      cachedFiles = [];
+    }
+    for (const key of [removed.hash, removed.id]) {
+      if (!key) continue;
+      await fs.rm(path.join(this.dir, 'pagetext', `${key}.json`), { force: true });
+      for (const f of cachedFiles) {
+        if (f.startsWith(`digest:${key}:`)) {
+          await fs.rm(path.join(cacheDir, f), { force: true });
+        }
+      }
+    }
   }
 }
