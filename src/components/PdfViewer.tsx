@@ -185,12 +185,17 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
     hlSpansRef.current = spans;
     container.className = container.className.replace(/\s*mode-\w+/g, '');
     container.className += ` mode-${mode}`;
-  }, [pageNum, zoom, mode]);
+    // 依赖含 loading：PDF 异步加载完成（loading→false）后触发首屏渲染。
+    // 否则首次打开（无历史进度、pageNum 不变）永远不渲染，canvas 停在默认 300×150。
+  }, [pageNum, zoom, mode, loading]);
 
   useEffect(() => {
+    // 加载中不渲染、不写进度——mount 时同步写入会把已存的阅读进度覆盖为 1，
+    // 而进度恢复要等 PDF 加载完成后才读取（两条路径存在时序差）。
+    if (loading) return;
     void renderPage();
     localStorage.setItem(`judou:progress:${doc.id}`, String(pageNum));
-  }, [renderPage, pageNum, doc.id]);
+  }, [renderPage, pageNum, doc.id, loading]);
 
   /* 容器尺寸变化（窗口缩放、开合目录侧栏/AI 面板）→ 自适应重渲染 */
   useEffect(() => {
