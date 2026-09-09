@@ -52,6 +52,27 @@ body {
   background: transparent;
 }
 
+/* 语义叠加：术语高亮（内置词典匹配，PRD F1.4 科目浅底线）。线条=浅实线，颜色=灰底，可全关 */
+.hl-term {
+  border-bottom: 1px solid rgba(74, 71, 63, 0.45);
+  cursor: help;
+}
+
+.mode-color .hl-term {
+  border-bottom: none;
+  background: rgba(74, 71, 63, 0.14);
+}
+
+.mode-off .hl-term {
+  border-bottom: none;
+  background: transparent;
+}
+
+.hl-term:hover {
+  background: rgba(74, 71, 63, 0.18);
+  cursor: help;
+}
+
 .hl-num:hover {
   background: rgba(47, 95, 143, 0.2);
   cursor: zoom-in;

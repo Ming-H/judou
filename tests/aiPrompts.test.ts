@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAskPrompt, buildDigestPrompt } from '../src/core/aiPrompts';
+import { buildAskPrompt, buildDigestPrompt, buildExplainPrompt } from '../src/core/aiPrompts';
 
 describe('AI 提示词构建（铁律内建）', () => {
   it('速览：含页码与原文', () => {
@@ -35,5 +35,17 @@ describe('AI 提示词构建（铁律内建）', () => {
     );
     expect(user).not.toContain('【第10页】');
     expect(user).toContain('【第11页】');
+  });
+
+  it('划词解释：词语入参、页码引用与无据声明规则内建', () => {
+    const { system, user } = buildExplainPrompt('递延收益', [
+      { page: 10, text: '递延收益 500,000,000.00 元' },
+      { page: 11, text: '' },
+    ]);
+    expect(user).toContain('【要解释的词语】递延收益');
+    expect(user).toContain('【第10页】');
+    expect(system).toContain('本页原文未提供该词的具体口径');
+    expect(system).toContain('[P12]');
+    expect(system).toContain('不做任何投资建议');
   });
 });

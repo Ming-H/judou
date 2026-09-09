@@ -6,6 +6,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { matchTerms, type GlossaryEntry } from '@/core/glossary';
 import { readNumber, readSelection, type NumberReading } from '@/core/numberReadability';
 import type { DocumentEntry } from '@/core/store/types';
 
@@ -53,7 +54,16 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
   const [mode, setMode] = useState<HighlightMode>('line');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [popover, setPopover] = useState<{ x: number; y: number; readings: NumberReading[] } | null>(null);
+
+  /** 点读卡：数字换算（程序）与术语释义（内置词典）可同卡分区 */
+  type PointPopover = { kind: 'point'; x: number; y: number; readings?: NumberReading[]; terms?: GlossaryEntry[] };
+  /** 划词解释卡：词典未收录时 LLM 结合本页语境兜底 */
+  type ExplainPopover = { kind: 'explain'; x: number; y: number; term: string; text: string; loading: boolean };
+  const [popover, setPopover] = useState<PointPopover | ExplainPopover | null>(null);
+  /** 划词工具条：换算 / 解释 / 提问 */
+  const [toolbar, setToolbar] = useState<{ x: number; y: number; selection: string; readings: NumberReading[] } | null>(
+    null,
+  );
 
   /* AI 解读面板 */
   const [aiOpen, setAiOpen] = useState(false);
@@ -175,7 +185,7 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
     });
     await textLayer.render();
 
-    // 数字句读叠加：长数字（千分位组或 ≥6 位）加高亮类
+    // 语义叠加：长数字（千分位组或 ≥6 位）虚线底线 + 已知术语浅底线（PRD F1.4）
     const spans: HTMLSpanElement[] = [];
     textLayerDiv.querySelectorAll('span').forEach((el) => {
       const span = el as HTMLSpanElement;
@@ -183,6 +193,9 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
       if (/\d{1,3}(,\d{3})+|\d{6,}/.test(text)) {
         span.classList.add('hl-num');
         spans.push(span);
+      }
+      if (matchTerms(text).length > 0) {
+        span.classList.add('hl-term');
       }
     });
     hlSpansRef.current = spans;
@@ -239,36 +252,107 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
     localStorage.setItem('judou:hlmode', mode);
   }, [mode]);
 
-  /* 划词 → 数字换算卡 */
+  /* 划词 → 工具条（换算/解释/提问）。选区为空则清空浮层 */
   function handleSelection() {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) {
-      setPopover(null);
+      setToolbar(null);
       return;
     }
     const text = sel.toString();
-    const readings = readSelection(text);
-    if (readings.length === 0) {
-      setPopover(null);
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setToolbar(null);
       return;
     }
     const rect = sel.getRangeAt(0).getBoundingClientRect();
-    setPopover({ x: rect.left + rect.width / 2, y: rect.top, readings });
-    setLastSelection(text.trim().slice(0, 400));
+    setPopover(null);
+    setToolbar({
+      x: rect.left + rect.width / 2,
+      y: rect.top,
+      selection: trimmed.slice(0, 200),
+      readings: readSelection(text),
+    });
+    setLastSelection(trimmed.slice(0, 400));
   }
 
-  /* 点击高亮数字 → 换算卡 */
+  /* 点击高亮 span → 点读卡（数字换算 / 术语释义，可同卡分区） */
   function handleClick(e: React.MouseEvent) {
     const target = e.target as HTMLElement;
-    if (target.classList?.contains('hl-num')) {
-      const reading = readNumber(target.textContent ?? '');
-      if (reading) {
+    const cls = target.classList;
+    if (cls?.contains('hl-num') || cls?.contains('hl-term')) {
+      const text = target.textContent ?? '';
+      const reading = cls.contains('hl-num') ? readNumber(text) : null;
+      const terms = cls.contains('hl-term') ? matchTerms(text) : [];
+      if (reading || terms.length > 0) {
         const rect = target.getBoundingClientRect();
-        setPopover({ x: rect.left + rect.width / 2, y: rect.top, readings: [reading] });
+        setToolbar(null);
+        setPopover({
+          kind: 'point',
+          x: rect.left + rect.width / 2,
+          y: rect.top,
+          readings: reading ? [reading] : undefined,
+          terms: terms.length > 0 ? terms : undefined,
+        });
         return;
       }
     }
     setPopover(null);
+    setToolbar(null);
+  }
+
+  /* 工具条动作：换算 */
+  function convertAction() {
+    if (!toolbar || toolbar.readings.length === 0) return;
+    setPopover({ kind: 'point', x: toolbar.x, y: toolbar.y, readings: toolbar.readings });
+    setToolbar(null);
+  }
+
+  /* 工具条动作：解释（选区含已知术语 → 内置词典直接出卡，未收录走 LLM 语境兜底） */
+  function explainAction() {
+    if (!toolbar) return;
+    const { selection, x, y } = toolbar;
+    setToolbar(null);
+    // 子串匹配（长词优先）：选区常带单位后缀如「基本每股收益（元／股）」，精确匹配会漏
+    const hits = matchTerms(selection);
+    if (hits.length > 0) {
+      setPopover({ kind: 'point', x, y, terms: hits });
+      return;
+    }
+    setPopover({ kind: 'explain', x, y, term: selection, text: '', loading: true });
+    (async () => {
+      try {
+        const res = await fetch('/api/ai/explain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ docId: doc.id, page: pageNum, term: selection }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || '解释生成失败');
+        setPopover({ kind: 'explain', x, y, term: selection, text: json.explain, loading: false });
+      } catch (e) {
+        setPopover({ kind: 'explain', x, y, term: selection, text: `出错了：${(e as Error).message}`, loading: false });
+      }
+    })();
+  }
+
+  /* 工具条动作：提问（引用划选文本） */
+  function askAction() {
+    if (!toolbar) return;
+    setAiOpen(true);
+    setAiTab('ask');
+    setQuestion((q) => (q ? `${q}\n` : '') + `「${toolbar.selection}」`);
+    setToolbar(null);
+    setPopover(null);
+  }
+
+  /* 术语卡「问 AI 本页语境」 */
+  function askTerm(term: string) {
+    setAiOpen(true);
+    setAiTab('ask');
+    setQuestion((q) => (q ? `${q}\n` : '') + `本页语境中「${term}」是什么意思？与本页数字有什么关联？`);
+    setPopover(null);
+    setToolbar(null);
   }
 
   const toc = outline ?? [];
@@ -460,7 +544,10 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
         <div
           ref={scrollRef}
           className="relative flex-1 overflow-auto bg-ink-100/60 p-2"
-          onScroll={() => setPopover(null)}
+          onScroll={() => {
+            setPopover(null);
+            setToolbar(null);
+          }}
         >
           {loading && (
             <div className="flex h-full items-center justify-center text-sm text-ink-700/70">
@@ -597,23 +684,102 @@ export default function PdfViewer({ doc }: { doc: DocumentEntry }) {
         )}
       </div>
 
-      {/* 数字句读悬浮卡 */}
-      {popover && (
+      {/* 划词工具条：换算 / 解释 / 提问 */}
+      {toolbar && (
         <div
-          className="fixed z-50 -translate-x-1/2 -translate-y-full rounded-lg border border-accent-500/40 bg-white px-4 py-3 shadow-xl"
+          className="fixed z-50 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-ink-200 bg-white px-1.5 py-1 shadow-lg"
+          style={{ left: toolbar.x, top: toolbar.y - 8 }}
+        >
+          {toolbar.readings.length > 0 && (
+            <button
+              onClick={convertAction}
+              className="rounded px-2 py-0.5 font-mono text-xs hover:bg-ink-50"
+              title="程序换算为 亿/万"
+            >
+              123 换算
+            </button>
+          )}
+          <button
+            onClick={explainAction}
+            className="rounded px-2 py-0.5 text-xs hover:bg-ink-50"
+            title="内置词典优先，未收录时 AI 结合本页语境解释"
+          >
+            📖 解释
+          </button>
+          <button
+            onClick={askAction}
+            className="rounded px-2 py-0.5 text-xs text-accent-600 hover:bg-accent-600/10"
+            title="引用划选文本向 AI 提问"
+          >
+            ✦ 提问
+          </button>
+        </div>
+      )}
+
+      {/* 点读卡：数字换算（程序）+ 术语释义（内置词典），可同卡分区 */}
+      {popover?.kind === 'point' && (
+        <div
+          className="fixed z-50 max-h-[70vh] w-72 -translate-x-1/2 -translate-y-full overflow-y-auto rounded-lg border border-accent-500/40 bg-white px-4 py-3 shadow-xl"
           style={{ left: popover.x, top: popover.y - 8 }}
           onMouseLeave={() => setPopover(null)}
         >
-          <p className="mb-1 text-[10px] tracking-widest text-ink-700/60">数字句读</p>
-          {popover.readings.map((r, i) => (
-            <div key={i} className="font-mono text-sm">
-              <p className="text-xs text-ink-700/70">{r.raw}</p>
-              {r.yi && <p className="font-medium text-accent-600">{r.yi}</p>}
-              {r.wan && r.yi && <p className="text-ink-900">{r.wan}</p>}
-              {r.wan && !r.yi && <p className="font-medium text-accent-600">{r.wan}</p>}
+          {popover.readings && popover.readings.length > 0 && (
+            <div className={popover.terms ? 'mb-2 border-b border-ink-100 pb-2' : ''}>
+              <p className="mb-1 text-[10px] tracking-widest text-ink-700/60">数字句读</p>
+              {popover.readings.map((r, i) => (
+                <div key={i} className="font-mono text-sm">
+                  <p className="text-xs text-ink-700/70">{r.raw}</p>
+                  {r.yi && <p className="font-medium text-accent-600">{r.yi}</p>}
+                  {r.wan && r.yi && <p className="text-ink-900">{r.wan}</p>}
+                  {r.wan && !r.yi && <p className="font-medium text-accent-600">{r.wan}</p>}
+                </div>
+              ))}
+              <p className="mt-1 text-[10px] text-ink-700/50">程序换算 · 非AI生成</p>
+            </div>
+          )}
+          {popover.terms?.map((t) => (
+            <div key={t.term} className="mb-2 last:mb-0">
+              <p className="flex items-baseline gap-2">
+                <span className="font-serif text-sm font-bold">{t.term}</span>
+                <span className="rounded bg-ink-100 px-1 text-[10px] text-ink-700/70">{t.category}</span>
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-800">{t.plain}</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-700/80">
+                <span className="font-medium">看什么：</span>
+                {t.watch}
+              </p>
+              <button
+                onClick={() => askTerm(t.term)}
+                className="mt-1.5 rounded border border-accent-500/60 px-2 py-0.5 text-[11px] text-accent-600 hover:bg-accent-600/10"
+              >
+                ✦ 问 AI：本页语境
+              </button>
             </div>
           ))}
-          <p className="mt-1 text-[10px] text-ink-700/50">程序换算 · 非AI生成</p>
+          {popover.terms && popover.terms.length > 0 && (
+            <p className="mt-1 border-t border-ink-100 pt-1 text-[10px] text-ink-700/50">
+              内置词典 · 程序匹配 · 非AI生成
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* 划词解释卡：词典未收录 → AI 结合本页 ±1 页语境 */}
+      {popover?.kind === 'explain' && (
+        <div
+          className="fixed z-50 max-h-[70vh] w-80 -translate-x-1/2 -translate-y-full overflow-y-auto rounded-lg border border-accent-500/40 bg-white px-4 py-3 shadow-xl"
+          style={{ left: popover.x, top: popover.y - 8 }}
+          onMouseLeave={() => setPopover(null)}
+        >
+          <p className="mb-1 flex items-baseline gap-2">
+            <span className="font-serif text-sm font-bold">📖 {popover.term}</span>
+          </p>
+          {popover.loading ? (
+            <p className="text-xs text-ink-700/70">⏳ 正在结合本页原文解释…</p>
+          ) : (
+            <p className="whitespace-pre-wrap text-xs leading-relaxed">{popover.text}</p>
+          )}
+          <p className="mt-2 border-t border-ink-100 pt-1 text-[10px] text-ink-700/50">AI 生成 · 以原文为准</p>
         </div>
       )}
     </div>
