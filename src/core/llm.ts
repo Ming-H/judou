@@ -70,6 +70,9 @@ export async function llmChat(
         model,
         max_tokens: opts.maxTokens ?? 1000,
         temperature: opts.temperature ?? 0.3,
+        // GLM-5.3+ 默认开思考，thinking 块会先吃光 max_tokens 导致正文为空（速览空输出实测）；
+        // 速览/问答/解释均为给定上下文的理解型任务，无需思考，关掉省 token 且快
+        thinking: { type: 'disabled' },
         ...(system ? { system } : {}),
         messages: rest,
       }),
